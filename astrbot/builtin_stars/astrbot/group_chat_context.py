@@ -192,8 +192,14 @@ class GroupChatContext:
                 record_ids.extend(remaining_ids)
 
         if records_to_inject:
+            # Keep this block visible to the current request but out of the
+            # persisted conversation history. Without the marker the block is
+            # saved into the conversation and re-sent in full on every later
+            # request, so the prompt grows monotonically with chat traffic.
             req.extra_user_content_parts.append(
-                TextPart(text=_format_group_history_block(records_to_inject))
+                TextPart(
+                    text=_format_group_history_block(records_to_inject)
+                ).mark_as_temp()
             )
 
     async def _format_message(self, event: AstrMessageEvent, cfg: dict) -> str:
