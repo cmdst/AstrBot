@@ -74,4 +74,11 @@ class TraceSpan:
 
         trace_logger = _get_trace_logger()
         if trace_logger and trace_logger.handlers:
-            trace_logger.info(json.dumps(payload, ensure_ascii=False))
+            # Tracing is observability only: a field that cannot be serialized must never
+            # abort the request that produced it.
+            try:
+                trace_logger.info(json.dumps(payload, ensure_ascii=False))
+            except (TypeError, ValueError) as exc:
+                logger.debug(
+                    "Failed to serialize trace payload for %s: %s", action, exc
+                )
