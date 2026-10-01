@@ -8,7 +8,7 @@ from sqlalchemy import event, text
 
 from astrbot.core.db.po import Conversation
 
-EXPECTED_CONNECTION_PRAGMAS = (1, 20000, 2, 134217728)
+EXPECTED_CONNECTION_PRAGMAS = (1, 8000, 2, 134217728)
 
 
 @pytest.mark.asyncio

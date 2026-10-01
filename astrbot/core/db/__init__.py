@@ -32,10 +32,12 @@ from astrbot.core.sentinels import NOT_GIVEN
 
 # Connection-scoped SQLite tunings.  `journal_mode` is intentionally absent because
 # it is persisted in the database file and only needs to be set once at initialization.
+# `cache_size` is per connection and the pool holds several, so it is kept small enough
+# that the aggregate page cache stays modest on a memory-constrained host.
 _SQLITE_CONNECTION_PRAGMAS = (
     "PRAGMA busy_timeout=30000",
     "PRAGMA synchronous=NORMAL",
-    "PRAGMA cache_size=20000",
+    "PRAGMA cache_size=8000",
     "PRAGMA temp_store=MEMORY",
     "PRAGMA mmap_size=134217728",
 )
