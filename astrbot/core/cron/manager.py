@@ -483,7 +483,14 @@ class CronJobManager:
         req = ProviderRequest()
         conv = await _get_session_conv(event=cron_event, plugin_context=self.ctx)
         req.conversation = conv
-        req.contexts = conv.history_list or []
+        # `history_list` is a runtime optimization; callers that only expose the public
+        # `history` string still fall back to parsing it.
+        if isinstance(getattr(conv, "history_list", None), list):
+            req.contexts = conv.history_list
+        elif conv is not None:
+            req.contexts = json.loads(conv.history or "[]")
+        else:
+            req.contexts = []
         cron_job_str = json.dumps(extras.get("cron_job", {}), ensure_ascii=False)
         req.system_prompt += PROACTIVE_AGENT_CRON_WOKE_SYSTEM_PROMPT.format(
             cron_job=cron_job_str

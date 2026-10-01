@@ -591,7 +591,14 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         req = ProviderRequest()
         conv = await _get_session_conv(event=cron_event, plugin_context=ctx)
         req.conversation = conv
-        req.contexts = conv.history_list or []
+        # `history_list` is a runtime optimization; callers that only expose the public
+        # `history` string still fall back to parsing it.
+        if isinstance(getattr(conv, "history_list", None), list):
+            req.contexts = conv.history_list
+        elif conv is not None:
+            req.contexts = json.loads(conv.history or "[]")
+        else:
+            req.contexts = []
 
         bg = json.dumps(extras["background_task_result"], ensure_ascii=False)
         req.system_prompt += BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT.format(

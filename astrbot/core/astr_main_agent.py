@@ -1355,7 +1355,12 @@ async def collect_initial_request(
                 list(req.contexts) if isinstance(req.contexts, list) else req.contexts
             )
             if req.conversation:
-                req.contexts = req.conversation.history_list or []
+                # `history_list` is a runtime optimization; callers that only expose the
+                # public `history` string still fall back to parsing it.
+                if isinstance(getattr(req.conversation, "history_list", None), list):
+                    req.contexts = req.conversation.history_list
+                else:
+                    req.contexts = json.loads(req.conversation.history or "[]")
         else:
             req = ProviderRequest()
             req.prompt = ""
@@ -1523,7 +1528,12 @@ async def collect_initial_request(
 
             conversation = await _get_session_conv(event, plugin_context)
             req.conversation = conversation
-            req.contexts = conversation.history_list or []
+            # `history_list` is a runtime optimization; callers that only expose the
+            # public `history` string still fall back to parsing it.
+            if isinstance(getattr(conversation, "history_list", None), list):
+                req.contexts = conversation.history_list
+            else:
+                req.contexts = json.loads(conversation.history or "[]")
             event.set_extra("provider_request", req)
 
     req.image_urls = normalize_and_dedupe_strings(req.image_urls)
