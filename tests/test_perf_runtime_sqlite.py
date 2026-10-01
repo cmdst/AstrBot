@@ -131,6 +131,34 @@ def test_invalid_history_string_does_not_break_construction():
     assert conversation.history_list == []
 
 
+def test_conversation_mgr_copies_the_orm_content_list():
+    """The producer must copy, so the ORM row and the conversation never share a list."""
+    from astrbot.core.conversation_mgr import ConversationManager
+    from astrbot.core.db.po import ConversationV2
+
+    db_content = [{"role": "user", "content": "from the database"}]
+    row = ConversationV2(
+        conversation_id="c",
+        platform_id="p",
+        user_id="u",
+        content=db_content,
+    )
+    conversation = ConversationManager(None)._convert_conv_from_v2_to_v1(row)
+
+    assert conversation.history_list == db_content
+    assert conversation.history_list is not db_content
+
+    # The pipeline prepends persona dialogs and appends file-extract messages in place.
+    contexts = list(conversation.history_list)
+    contexts[:0] = [{"role": "system", "content": "persona scaffold"}]
+    contexts.append({"role": "system", "content": "file extract"})
+
+    # Plugin/dashboard view: a scaffold-free snapshot of the stored row.
+    assert json.loads(conversation.history) == db_content
+    # The ORM row itself is untouched, so a dirty-flush cannot write the scaffold back.
+    assert row.content == db_content
+
+
 def test_contexts_never_alias_the_conversation_history_list():
     """Every consumer site must copy `history_list`, never take it over (I1).
 

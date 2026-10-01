@@ -84,7 +84,9 @@ class ConversationManager:
         updated_at = int(updated_ts) if updated_ts is not None else 0
         # `content` is a deferred column on the summary query, so it must only be touched
         # when the history is actually wanted. The JSON column always yields a list;
-        # anything else is unusable as history.
+        # anything else is unusable as history. Copy it so the conversation owns its own
+        # list: handing over the ORM list would let in-place edits to `req.contexts`
+        # rewrite the stored row.
         content = []
         if include_history:
             content = conv_v2.content if isinstance(conv_v2.content, list) else []
@@ -93,7 +95,7 @@ class ConversationManager:
             user_id=conv_v2.user_id,
             cid=conv_v2.conversation_id,
             history="" if include_history else "[]",
-            history_list=content,
+            history_list=list(content) if include_history else [],
             title=conv_v2.title,
             persona_id=conv_v2.persona_id,
             created_at=created_at,
