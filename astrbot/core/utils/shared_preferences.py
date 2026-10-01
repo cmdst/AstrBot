@@ -1,6 +1,7 @@
 import asyncio
 import os
 import threading
+import time
 from collections import defaultdict
 from copy import deepcopy
 from typing import Any, TypeVar, overload
@@ -16,6 +17,13 @@ from .astrbot_path import get_astrbot_data_path
 
 _VT = TypeVar("_VT")
 _MISSING = object()
+# Lifetime of a negative ("known missing") cache entry. Reads of absent keys are
+# point queries against the database; hot-path lookups such as
+# SessionServiceManager.is_session_enabled() run once per message and usually
+# find nothing at all. A short TTL keeps the staleness window bounded while
+# collapsing those repeated point queries; every write path through
+# _apply_cache_operation() invalidates the entry immediately.
+_NEGATIVE_CACHE_TTL_SECONDS = 1.5
 _WriteOperation = tuple[
     str,
     str,
@@ -51,6 +59,11 @@ class SharedPreferences:
         # See https://github.com/AstrBotDevs/AstrBot/pull/9649 for the original
         # deadlock scenario and design rationale.
         self._cache: dict[tuple[str, str, str], Any] = {}
+        # Keys confirmed absent from the database, mapped to the
+        # time.monotonic() deadline of that confirmation. Kept separate from
+        # _cache so the overlay keeps mirroring exactly the values this process
+        # wrote (see the note above).
+        self._negative_cache: dict[tuple[str, str, str], float] = {}
         self._cache_lock = threading.RLock()
         self._cache_initialized = False
         self._initializing = False
@@ -74,6 +87,10 @@ class SharedPreferences:
     def _apply_cache_operation(self, operation: _WriteOperation) -> None:
         """Apply one preference mutation to the in-memory cache.
 
+        Every mutation also invalidates the negative cache so a key that was
+        known to be missing becomes visible on the next read, without waiting
+        for its TTL (panel toggles must take effect immediately).
+
         Args:
             operation: Queued write operation to reflect in memory.
         """
@@ -81,8 +98,10 @@ class SharedPreferences:
         with self._cache_lock:
             if action == "put" and key is not None:
                 self._cache[(scope, scope_id, key)] = deepcopy(value)
+                self._negative_cache.pop((scope, scope_id, key), None)
             elif action == "remove" and key is not None:
                 self._cache.pop((scope, scope_id, key), None)
+                self._negative_cache.pop((scope, scope_id, key), None)
             elif action == "clear":
                 keys = [
                     cache_key
@@ -91,6 +110,13 @@ class SharedPreferences:
                 ]
                 for cache_key in keys:
                     self._cache.pop(cache_key, None)
+                negative_keys = [
+                    cache_key
+                    for cache_key in self._negative_cache
+                    if cache_key[0] == scope and cache_key[1] == scope_id
+                ]
+                for cache_key in negative_keys:
+                    self._negative_cache.pop(cache_key, None)
 
     def _schedule_write(self, operation: _WriteOperation) -> None:
         """Schedule a preference write on the owning event loop.
@@ -275,12 +301,31 @@ class SharedPreferences:
         await self.initialize()
         if scope_id is None or key is None:
             return default
+        cache_key = (scope, scope_id, key)
+        now = time.monotonic()
         with self._cache_lock:
-            value = self._cache.get((scope, scope_id, key), _MISSING)
+            value = self._cache.get(cache_key, _MISSING)
             if value is not _MISSING:
                 return deepcopy(value)
+            negative_deadline = self._negative_cache.get(cache_key)
+            if negative_deadline is not None:
+                if negative_deadline > now:
+                    return default
+                # Lazily evict the stale entry so the dict stays bounded by the
+                # number of distinct keys read within one TTL window.
+                self._negative_cache.pop(cache_key, None)
         preference = await self.db_helper.get_preference(scope, scope_id, key)
         if preference is None:
+            with self._cache_lock:
+                # A concurrent write may have landed while the point query was in
+                # flight; that write could not invalidate an entry that did not
+                # exist yet, so honour the overlay value instead of remembering a
+                # stale absence.
+                if cache_key in self._cache:
+                    return deepcopy(self._cache[cache_key])
+                self._negative_cache[cache_key] = (
+                    time.monotonic() + _NEGATIVE_CACHE_TTL_SECONDS
+                )
             return default
         return deepcopy(preference.value["val"])
 
