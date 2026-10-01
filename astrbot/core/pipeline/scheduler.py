@@ -1,3 +1,4 @@
+import time
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -13,6 +14,10 @@ from .bootstrap import ensure_builtin_stages_registered
 from .context import PipelineContext
 from .stage import Stage, registered_stages
 from .stage_order import STAGES_ORDER
+
+# Stages slower than this only produce a single warning, so the normal path
+# stays log-free and the logger cannot become a hotspot itself.
+SLOW_STAGE_THRESHOLD_MS = 3000
 
 
 class PipelineScheduler:
@@ -33,6 +38,21 @@ class PipelineScheduler:
             await stage_instance.initialize(self.ctx)
             self.stages.append(stage_instance)
 
+    @staticmethod
+    def _log_slow_stage(stage_name: str, started: float) -> None:
+        """Warn when the time a stage spent on its own exceeded the threshold.
+
+        Args:
+            stage_name: Class name of the measured stage.
+            started: ``time.perf_counter()`` value taken before the segment.
+        """
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        if elapsed_ms > SLOW_STAGE_THRESHOLD_MS:
+            logger.warning(
+                f"Pipeline stage {stage_name} took {elapsed_ms:.0f} ms "
+                f"(threshold {SLOW_STAGE_THRESHOLD_MS} ms).",
+            )
+
     async def _process_stages(self, event: AstrMessageEvent, from_stage=0) -> None:
         """依次执行各个阶段
 
@@ -43,7 +63,9 @@ class PipelineScheduler:
         """
         for i in range(from_stage, len(self.stages)):
             stage = self.stages[i]  # 获取当前要执行的阶段
-            # logger.debug(f"执行阶段 {stage.__class__.__name__}")
+            stage_name = stage.__class__.__name__
+            started = time.perf_counter()
+            # logger.debug(f"执行阶段 {stage_name}")
             coroutine = stage.process(
                 event,
             )  # 调用阶段的process方法, 返回协程或者异步生成器
@@ -52,31 +74,36 @@ class PipelineScheduler:
                 # 如果返回的是异步生成器, 实现洋葱模型的核心
                 agen = cast(AsyncGenerator[None], coroutine)
                 async for _ in agen:
+                    # Time the stage's own work only: the recursive call below is
+                    # excluded by resetting the timestamp right after it returns.
+                    self._log_slow_stage(stage_name, started)
                     # 此处是前置处理完成后的暂停点(yield), 下面开始执行后续阶段
                     if event.is_stopped():
                         logger.debug(
-                            f"Stage {stage.__class__.__name__} stopped event propagation.",
+                            f"Stage {stage_name} stopped event propagation.",
                         )
                         break
 
                     # 递归调用, 处理所有后续阶段
                     await self._process_stages(event, i + 1)
+                    started = time.perf_counter()
 
                     # 此处是后续所有阶段处理完毕后返回的点, 执行后置处理
                     if event.is_stopped():
                         logger.debug(
-                            f"Stage {stage.__class__.__name__} stopped event propagation.",
+                            f"Stage {stage_name} stopped event propagation.",
                         )
                         break
+                # Post-yield work of this stage, if the generator ran to completion.
+                self._log_slow_stage(stage_name, started)
             else:
                 # 如果返回的是普通协程(不含yield的async函数), 则不进入下一层(基线条件)
                 # 简单地等待它执行完成, 然后继续执行下一个阶段
                 await coroutine
+                self._log_slow_stage(stage_name, started)
 
                 if event.is_stopped():
-                    logger.debug(
-                        f"Stage {stage.__class__.__name__} stopped event propagation."
-                    )
+                    logger.debug(f"Stage {stage_name} stopped event propagation.")
                     break
 
     async def execute(self, event: AstrMessageEvent) -> None:

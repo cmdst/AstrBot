@@ -237,7 +237,7 @@ class WakingCheckStage(Stage):
                 )
                 if not is_group_cmd_handler:
                     activated_handlers.append(handler)
-                    if "parsed_params" in event.get_extra(default={}):
+                    if "parsed_params" in event.get_extra():
                         handlers_parsed_params[handler.handler_full_name] = (
                             event.get_extra("parsed_params")
                         )

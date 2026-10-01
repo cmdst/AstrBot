@@ -24,6 +24,9 @@ class RateLimitStage(Stage):
         self.event_timestamps: defaultdict[str, deque[datetime]] = defaultdict(deque)
         # 为每个会话设置一个锁，避免并发冲突
         self.locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # One stall at a time per session. Deliberately a separate lock: the
+        # counting section above must never be held while an event waits.
+        self.stall_gates: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # 限流参数
         self.rate_limit_count: int = 0
         self.rate_limit_time: timedelta = timedelta(0)
@@ -56,30 +59,26 @@ class RateLimitStage(Stage):
         """
         umo = event.unified_msg_origin
 
-        async with self.locks[umo]:  # 确保同一会话不会并发修改队列
-            now = datetime.now()
-            # 检查并处理限流，可能需要多次检查直到满足条件
-            while True:
+        # 检查并处理限流，可能需要多次检查直到满足条件
+        while True:
+            # Counting section: decide and record. It never waits, so an event
+            # that can be admitted is not delayed behind a rate-limited one.
+            async with self.locks[umo]:  # 确保同一会话不会并发修改队列
+                now = datetime.now()
                 timestamps = self.event_timestamps[umo]
                 self._remove_expired_timestamps(timestamps, now)
 
                 if self.rate_limit_count <= 0:
-                    break
+                    return
                 if len(timestamps) < self.rate_limit_count:
                     timestamps.append(now)
-                    break
+                    return
                 next_window_time = timestamps[0] + self.rate_limit_time
                 stall_duration = (next_window_time - now).total_seconds() + 0.3
 
                 match self.rl_strategy:
                     case RateLimitStrategy.STALL.value:
-                        logger.info(
-                            f"Session {umo} was rate-limited. Processing will "
-                            f"pause for {stall_duration:.2f} seconds according to the "
-                            "rate-limit policy.",
-                        )
-                        await asyncio.sleep(stall_duration)
-                        now = datetime.now()
+                        pass  # Waits below, outside the counting section.
                     case RateLimitStrategy.DISCARD.value:
                         logger.info(
                             f"Session {umo} was rate-limited. This request was "
@@ -87,6 +86,29 @@ class RateLimitStage(Stage):
                             f"resets in {stall_duration:.2f} seconds.",
                         )
                         return event.stop_event()
+
+            # Rate-limited events queue here, one waiter per session, and
+            # re-check the window before waiting: the fixed window and the
+            # admission order stay as before, but the lock above stays free.
+            async with self.stall_gates[umo]:
+                async with self.locks[umo]:
+                    now = datetime.now()
+                    timestamps = self.event_timestamps[umo]
+                    self._remove_expired_timestamps(timestamps, now)
+                    if (
+                        self.rate_limit_count <= 0
+                        or len(timestamps) < self.rate_limit_count
+                    ):
+                        continue
+                    next_window_time = timestamps[0] + self.rate_limit_time
+                    stall_duration = (next_window_time - now).total_seconds() + 0.3
+
+                logger.info(
+                    f"Session {umo} was rate-limited. Processing will "
+                    f"pause for {stall_duration:.2f} seconds according to the "
+                    "rate-limit policy.",
+                )
+                await asyncio.sleep(stall_duration)
 
     def _remove_expired_timestamps(
         self,

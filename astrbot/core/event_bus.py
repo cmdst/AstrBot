@@ -35,13 +35,16 @@ class EventBus:
         self.astrbot_config_mgr = astrbot_config_mgr
         # 持有正在执行的 pipeline 任务的强引用, 防止 task 在 pending 状态被 GC 回收
         self._pending_tasks: set[asyncio.Task] = set()
+        # umo -> (conf_id, conf_name), dropped whenever the routing data changes
+        self._conf_cache: dict[str, tuple[str, str]] = {}
+        self._routes_snapshot: dict[str, str] = {}
+        self._abconf_snapshot: dict | None = None
+        self._abconf_count = 0
 
     async def dispatch(self) -> None:
         while True:
             event: AstrMessageEvent = await self.event_queue.get()
-            conf_info = self.astrbot_config_mgr.get_conf_info(event.unified_msg_origin)
-            conf_id = conf_info["id"]
-            conf_name = conf_info.get("name") or conf_id
+            conf_id, conf_name = self._resolve_conf(event.unified_msg_origin)
             self._print_event(event, conf_name)
             scheduler = self.pipeline_scheduler_mapping.get(conf_id)
             if not scheduler:
@@ -52,6 +55,45 @@ class EventBus:
             task = asyncio.create_task(scheduler.execute(event))
             self._pending_tasks.add(task)
             task.add_done_callback(self._on_task_done)
+
+    def _resolve_conf(self, umo: str) -> tuple[str, str]:
+        """Resolve the configuration id and display name of a session.
+
+        ``AstrBotConfigManager.get_conf_info`` re-parses the UMO and scans the
+        routing table with ``fnmatch`` on every event, while the routing table
+        only changes through the dashboard. The result is therefore cached until
+        the routing table or the profile metadata changes.
+
+        Args:
+            umo: Unified message origin of the incoming event.
+
+        Returns:
+            A ``(conf_id, conf_name)`` tuple, where the name falls back to the id.
+        """
+        routes = self.astrbot_config_mgr.ucr.umop_to_conf_id
+        abconf_data = self.astrbot_config_mgr.abconf_data
+        # Routing values are plain strings, so a shallow copy detects every edit,
+        # including the in-place ones done by update_route / delete_route.
+        if (
+            routes != self._routes_snapshot
+            or abconf_data is not self._abconf_snapshot
+            or len(abconf_data) != self._abconf_count
+        ):
+            self._conf_cache.clear()
+            self._routes_snapshot = dict(routes)
+            self._abconf_snapshot = abconf_data
+            self._abconf_count = len(abconf_data)
+
+        cached = self._conf_cache.get(umo)
+        if cached is None:
+            conf_info = self.astrbot_config_mgr.get_conf_info(umo)
+            conf_id = conf_info["id"]
+            cached = (conf_id, conf_info.get("name") or conf_id)
+            if len(self._conf_cache) >= 1024:
+                # Session origins are effectively unbounded, so bound the cache.
+                self._conf_cache.clear()
+            self._conf_cache[umo] = cached
+        return cached
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         """pipeline 任务结束回调: 移除强引用并暴露未捕获的异常"""

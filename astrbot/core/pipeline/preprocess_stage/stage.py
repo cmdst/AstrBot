@@ -19,6 +19,12 @@ from astrbot.core.utils.media_utils import (
 from ..context import PipelineContext
 from ..stage import Stage, register_stage
 
+# ":" is ambiguous for Windows absolute paths, so match a drive-lettered source
+# first and a drive-lettered target second. Compile-time constants: compiled once
+# at import instead of once per mapping per message.
+DRIVE_SOURCE_MAPPING_PATTERN = re.compile(r"([A-Za-z]:[^:]+):(.+)")
+DRIVE_TARGET_MAPPING_PATTERN = re.compile(r"(.+):([A-Za-z]:.+)")
+
 
 @register_stage
 class PreProcessStage(Stage):
@@ -82,14 +88,11 @@ class PreProcessStage(Stage):
             for idx, component in enumerate(message_chain):
                 if isinstance(component, Record | Image) and component.url:
                     for mapping in mappings:
-                        # ":" is ambiguous for Windows absolute paths. Parse
-                        # the separator after a drive-lettered source first,
-                        # then handle a drive-lettered target.
-                        drive_source_mapping = re.fullmatch(
-                            r"([A-Za-z]:[^:]+):(.+)", mapping
+                        drive_source_mapping = DRIVE_SOURCE_MAPPING_PATTERN.fullmatch(
+                            mapping
                         )
-                        drive_target_mapping = re.fullmatch(
-                            r"(.+):([A-Za-z]:.+)", mapping
+                        drive_target_mapping = DRIVE_TARGET_MAPPING_PATTERN.fullmatch(
+                            mapping
                         )
                         if drive_source_mapping:
                             from_, to_ = drive_source_mapping.groups()
