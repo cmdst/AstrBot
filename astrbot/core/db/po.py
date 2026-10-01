@@ -1,3 +1,4 @@
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -580,13 +581,99 @@ class Conversation:
     cid: str
     """对话 ID, 是 uuid 格式的字符串"""
     history: str = ""
-    """字符串格式的对话列表。"""
+    """字符串格式的对话列表。
+
+    该字段保持对外契约不变，但只在真正被读取时才由 `history_list` 序列化出来：
+    热路径只使用 `history_list`，因此不再需要「先 dumps 再 loads」的往返。
+    """
+    history_list: list = field(default_factory=list)
+    """`history` 对应的消息列表，热路径可直接读取，避免重复的 JSON 反序列化。
+
+    - 给出非空 `history_list`、`history` 为空时，首次读取 `history` 才做序列化。
+    - 只给出 `history`（字符串）时，本列表由它反序列化得到。
+    - 对 `history` 的赋值（历史版本里插件与面板均如此使用）会同步刷新本字段。
+    """
     title: str | None = ""
     persona_id: str | None = ""
     created_at: int = 0
     updated_at: int = 0
     token_usage: int = 0
     """对话的总 token 数量。AstrBot 会保留最近一次 LLM 请求返回的总 token 数，方便统计。token_usage 可能为 0，表示未知。"""
+    _history_ready: bool = field(default=False, init=False, repr=False, compare=False)
+    """Internal flag: dataclass `__init__` has completed, so the fields are both assigned."""
+
+    def __post_init__(self) -> None:
+        """Normalize `history` and `history_list` after the dataclass finished `__init__`.
+
+        The dataclass assigns fields in declaration order, so the sync must run once both
+        fields exist. Only one of the two representations needs to be materialized,
+        which keeps the multi-megabyte `history` string off the hot path.
+        """
+        self._history_ready = True
+        if self.history_list:
+            # The list is already available; `history` is materialized on first access.
+            return
+        if self.history:
+            self._sync_history_list(self.history)
+        else:
+            self.history_list = []
+
+    def __getattribute__(self, name: str):
+        """Materialize the legacy `history` string on first access.
+
+        Args:
+            name: Name of the attribute being accessed.
+
+        Returns:
+            The requested attribute value.
+        """
+        if name == "history" and not object.__getattribute__(self, "history"):
+            try:
+                history_list = object.__getattribute__(self, "history_list")
+            except AttributeError:
+                # Plugins and the dashboard build instances with `history=<str>` before
+                # the `history_list` field is assigned.
+                history_list = []
+            # Fill `history` before serializing so that `__setattr__` does not parse the
+            # generated JSON back into `history_list`.
+            object.__setattr__(self, "history", json.dumps(history_list))
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        """Keep `history` and `history_list` in sync on assignment.
+
+        Args:
+            name: Name of the attribute being assigned.
+            value: New value of the attribute.
+        """
+        object.__setattr__(self, name, value)
+        if not object.__getattribute__(self, "_history_ready"):
+            # `__init__` is still assigning fields; `__post_init__` performs the sync.
+            return
+        if name == "history":
+            if value:
+                self._sync_history_list(value)
+                return
+            try:
+                has_list = bool(object.__getattribute__(self, "history_list"))
+            except AttributeError:
+                has_list = False
+            if not has_list:
+                self.history_list = []
+        elif name == "history_list" and value:
+            # A non-empty list invalidates any previously materialized string.
+            object.__setattr__(self, "history", "")
+
+    def _sync_history_list(self, value) -> None:
+        """Refresh `history_list` from a newly assigned `history` string.
+
+        Args:
+            value: The newly assigned `history` value.
+        """
+        try:
+            self.history_list = json.loads(value)
+        except (TypeError, ValueError):
+            self.history_list = []
 
 
 class Personality(TypedDict):

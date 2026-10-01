@@ -66,9 +66,14 @@ class ConversationManager:
     ) -> Conversation:
         """Convert a ConversationV2 object into the legacy Conversation object.
 
+        The stored message list is handed over as-is and `Conversation` normalizes the
+        legacy `history` string from it, so the hot path no longer serializes the whole
+        history only for the caller to deserialize it again.
+
         Args:
             conv_v2: Database conversation object.
-            include_history: Whether to access and serialize the full history.
+            include_history: Whether to expose the full history. When disabled, an
+                empty history is returned to avoid materializing the stored content.
 
         Returns:
             Legacy-compatible conversation object.
@@ -81,7 +86,8 @@ class ConversationManager:
             platform_id=conv_v2.platform_id,
             user_id=conv_v2.user_id,
             cid=conv_v2.conversation_id,
-            history=json.dumps(conv_v2.content or []) if include_history else "[]",
+            history="" if include_history else "[]",
+            history_list=(conv_v2.content or []) if include_history else [],
             title=conv_v2.title,
             persona_id=conv_v2.persona_id,
             created_at=created_at,

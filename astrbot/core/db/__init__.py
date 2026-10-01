@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from deprecated import deprecated
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from astrbot.core.db.po import (
@@ -29,6 +30,36 @@ from astrbot.core.db.po import (
 )
 from astrbot.core.sentinels import NOT_GIVEN
 
+# Connection-scoped SQLite tunings.  `journal_mode` is intentionally absent because
+# it is persisted in the database file and only needs to be set once at initialization.
+_SQLITE_CONNECTION_PRAGMAS = (
+    "PRAGMA busy_timeout=30000",
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA cache_size=20000",
+    "PRAGMA temp_store=MEMORY",
+    "PRAGMA mmap_size=134217728",
+)
+
+
+def _apply_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+    """Apply the connection-scoped SQLite performance PRAGMAs.
+
+    SQLAlchemy pools connections, and `synchronous` / `cache_size` / `temp_store` /
+    `mmap_size` are per-connection settings that a pool does not inherit.  Applying
+    them here guarantees that every pooled connection is tuned, not just whichever
+    one happened to run the initialization statements.
+
+    Args:
+        dbapi_connection: Raw DBAPI connection being created by the pool.
+        _connection_record: SQLAlchemy pool record for that connection (unused).
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        for pragma in _SQLITE_CONNECTION_PRAGMAS:
+            cursor.execute(pragma)
+    finally:
+        cursor.close()
+
 
 @dataclass
 class BaseDatabase(abc.ABC):
@@ -50,6 +81,10 @@ class BaseDatabase(abc.ABC):
             future=True,
             connect_args=connect_args,
         )
+        if is_sqlite:
+            # Performance PRAGMAs are connection-scoped, so they must be applied to
+            # every pooled connection instead of once to an arbitrary connection.
+            event.listen(self.engine.sync_engine, "connect", _apply_sqlite_pragmas)
         self.AsyncSessionLocal = async_sessionmaker(
             self.engine,
             class_=AsyncSession,

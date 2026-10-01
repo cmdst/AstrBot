@@ -1355,7 +1355,7 @@ async def collect_initial_request(
                 list(req.contexts) if isinstance(req.contexts, list) else req.contexts
             )
             if req.conversation:
-                req.contexts = json.loads(req.conversation.history)
+                req.contexts = req.conversation.history_list or []
         else:
             req = ProviderRequest()
             req.prompt = ""
@@ -1523,7 +1523,7 @@ async def collect_initial_request(
 
             conversation = await _get_session_conv(event, plugin_context)
             req.conversation = conversation
-            req.contexts = json.loads(conversation.history)
+            req.contexts = conversation.history_list or []
             event.set_extra("provider_request", req)
 
     req.image_urls = normalize_and_dedupe_strings(req.image_urls)

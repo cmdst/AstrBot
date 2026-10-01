@@ -84,12 +84,10 @@ class SQLiteDatabase(BaseDatabase):
         """Initialize the database by creating tables if they do not exist."""
         async with self.engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+            # journal_mode is persisted in the database file, so it is a one-off setting.
+            # The remaining performance PRAGMAs are connection-scoped and are applied to
+            # every pooled connection by the "connect" listener registered in BaseDatabase.
             await conn.execute(text("PRAGMA journal_mode=WAL"))
-            await conn.execute(text("PRAGMA busy_timeout=30000"))
-            await conn.execute(text("PRAGMA synchronous=NORMAL"))
-            await conn.execute(text("PRAGMA cache_size=20000"))
-            await conn.execute(text("PRAGMA temp_store=MEMORY"))
-            await conn.execute(text("PRAGMA mmap_size=134217728"))
             await conn.execute(text("PRAGMA optimize"))
             # 确保 personas 表有 folder_id、sort_order、skills 列（前向兼容）
             await self._ensure_persona_folder_columns(conn)
@@ -632,7 +630,8 @@ class SQLiteDatabase(BaseDatabase):
                     return None
                 query = query.values(**values)
                 await session.execute(query)
-        return await self.get_conversation_by_id(cid)
+        # The updated row is intentionally not read back: callers discard the value and
+        # reading the full content column again would cost a multi-megabyte round trip.
 
     async def delete_conversation(self, cid) -> None:
         async with self.get_db() as session:
