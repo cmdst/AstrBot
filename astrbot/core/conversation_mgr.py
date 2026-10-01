@@ -82,12 +82,14 @@ class ConversationManager:
         updated_ts = to_utc_timestamp(conv_v2.updated_at)
         created_at = int(created_ts) if created_ts is not None else 0
         updated_at = int(updated_ts) if updated_ts is not None else 0
+        # The JSON column always yields a list; anything else is unusable as history.
+        content = conv_v2.content if isinstance(conv_v2.content, list) else []
         return Conversation(
             platform_id=conv_v2.platform_id,
             user_id=conv_v2.user_id,
             cid=conv_v2.conversation_id,
             history="" if include_history else "[]",
-            history_list=(conv_v2.content or []) if include_history else [],
+            history_list=content if include_history else [],
             title=conv_v2.title,
             persona_id=conv_v2.persona_id,
             created_at=created_at,

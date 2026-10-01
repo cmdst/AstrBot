@@ -634,6 +634,10 @@ class Conversation:
                 # Plugins and the dashboard build instances with `history=<str>` before
                 # the `history_list` field is assigned.
                 history_list = []
+            if not isinstance(history_list, list):
+                # Never hand a foreign object to json.dumps: a non-list value would raise
+                # TypeError and surface as a failed request.
+                history_list = []
             # Fill `history` before serializing so that `__setattr__` does not parse the
             # generated JSON back into `history_list`.
             object.__setattr__(self, "history", json.dumps(history_list))
