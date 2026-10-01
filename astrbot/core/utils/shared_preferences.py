@@ -311,8 +311,10 @@ class SharedPreferences:
             if negative_deadline is not None:
                 if negative_deadline > now:
                     return default
-                # Lazily evict the stale entry so the dict stays bounded by the
-                # number of distinct keys read within one TTL window.
+                # Evict the expired entry. Expired entries of keys that are never
+                # read again are not swept here, so this dict is not strictly
+                # bounded: the key space is chosen by callers (session origins,
+                # plugin ids) and stays small in practice.
                 self._negative_cache.pop(cache_key, None)
         preference = await self.db_helper.get_preference(scope, scope_id, key)
         if preference is None:

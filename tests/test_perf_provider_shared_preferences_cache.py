@@ -92,9 +92,24 @@ async def test_negative_cache_expires_after_ttl(preferences):
     await store.get_async("umo", UMO, HOT_KEY, {})
     assert calls["n"] == 1
 
+    # Another process writes the key while this process still remembers the
+    # absence. Within the TTL the stale default is still served on purpose --
+    # that is the bounded staleness window the TTL buys.
+    await database.insert_preference_or_update(
+        "umo",
+        UMO,
+        HOT_KEY,
+        {"val": {"llm_enabled": False}},
+    )
+    assert await store.get_async("umo", UMO, HOT_KEY, {}) == {}
+    assert calls["n"] == 1
+
+    # Once the TTL lapses the next read pays exactly one point query and returns
+    # the value written by the other process.
     await asyncio.sleep(1.7)
-    await store.get_async("umo", UMO, HOT_KEY, {})
-    assert calls["n"] == 2
+    calls["n"] = 0
+    assert await store.get_async("umo", UMO, HOT_KEY, {}) == {"llm_enabled": False}
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio
