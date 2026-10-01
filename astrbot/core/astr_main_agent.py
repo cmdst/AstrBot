@@ -1358,7 +1358,9 @@ async def collect_initial_request(
                 # `history_list` is a runtime optimization; callers that only expose the
                 # public `history` string still fall back to parsing it.
                 if isinstance(getattr(req.conversation, "history_list", None), list):
-                    req.contexts = req.conversation.history_list
+                    # Copy: the pipeline mutates `req.contexts` in place, so handing over
+                    # the conversation's own list would rewrite the stored history.
+                    req.contexts = list(req.conversation.history_list)
                 else:
                     req.contexts = json.loads(req.conversation.history or "[]")
         else:
@@ -1531,7 +1533,8 @@ async def collect_initial_request(
             # `history_list` is a runtime optimization; callers that only expose the
             # public `history` string still fall back to parsing it.
             if isinstance(getattr(conversation, "history_list", None), list):
-                req.contexts = conversation.history_list
+                # Copy: see `collect_initial_request` for why the list is not handed over.
+                req.contexts = list(conversation.history_list)
             else:
                 req.contexts = json.loads(conversation.history or "[]")
             event.set_extra("provider_request", req)

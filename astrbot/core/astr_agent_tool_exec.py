@@ -594,7 +594,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         # `history_list` is a runtime optimization; callers that only expose the public
         # `history` string still fall back to parsing it.
         if isinstance(getattr(conv, "history_list", None), list):
-            req.contexts = conv.history_list
+            # Copy: the pipeline mutates `req.contexts` in place, so handing over the
+            # conversation's own list would rewrite the stored history.
+            req.contexts = list(conv.history_list)
         elif conv is not None:
             req.contexts = json.loads(conv.history or "[]")
         else:
