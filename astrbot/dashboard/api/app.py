@@ -10,6 +10,10 @@ from astrbot.core import DEMO_MODE, LogBroker
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.log import LogManager
+from astrbot.dashboard.disconnect import (
+    client_disconnected_response,
+    is_client_disconnect,
+)
 from astrbot.dashboard.responses import ApiError, error
 from astrbot.dashboard.services.api_key_service import ApiKeyService
 from astrbot.dashboard.services.auth_service import AuthService
@@ -177,6 +181,14 @@ def create_dashboard_asgi_app(
 
     @app.exception_handler(Exception)
     async def catch_all_handler(_request: Request, exc: Exception):
+        if is_client_disconnect(exc):
+            # 客户端在响应开始前断开（SSE 建连后立刻取消等）：响应无处可送，
+            # 这是正常收尾，不该记成 Unhandled exception（会被日志巡检判成 HIGH）。
+            LogManager.GetLogger("astrbot.dashboard").debug(
+                "客户端在响应开始前断开，按正常收尾处理：%s",
+                _request.url.path,
+            )
+            return client_disconnected_response()
         LogManager.GetLogger("astrbot.dashboard").error(
             "Unhandled exception in dashboard API",
             exc_info=exc,

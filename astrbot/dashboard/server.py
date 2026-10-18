@@ -26,6 +26,7 @@ from astrbot.dashboard.asgi_runtime import (
     DashboardRequestState,
     FastAPIAppAdapter,
 )
+from astrbot.dashboard.disconnect import call_next_tolerant
 from astrbot.dashboard.responses import error
 from astrbot.dashboard.services.backup_service import CHUNK_SIZE
 from astrbot.dashboard.services.chat_service import MAX_UPLOAD_FILE_SIZE_BYTES
@@ -319,7 +320,10 @@ class AstrBotDashboard:
             if rejection is not None:
                 status_code, message = rejection
                 return JSONResponse(error(message), status_code=status_code)
-            return await call_next(request_)
+            # 客户端在响应开始前断开时，Starlette 会把 anyio.EndOfStream 包成
+            # RuntimeError("No response returned.")；那是正常路径而非服务端异常，
+            # 这里按 499 正常收尾（详见 astrbot/dashboard/disconnect.py）。
+            return await call_next_tolerant(request_, call_next)
 
         self.shutdown_event = shutdown_event
 
